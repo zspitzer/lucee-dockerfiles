@@ -10,6 +10,7 @@ on:
   # push only for testing!
   push:
   repository_dispatch:
+     types: [build-docker-images]
   workflow_call:
     inputs:
       BRANCH:
