@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
   # push only for testing!
   push:
+  repository_dispatch:
   workflow_call:
     inputs:
       BRANCH:
