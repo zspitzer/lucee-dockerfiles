@@ -18,11 +18,15 @@ class Config(object):
 	TOMCAT_JAVA_VERSION = attr.ib()
 	TOMCAT_BASE_IMAGE = attr.ib()
 
-
 def flatten(lst):
 	return [x for y in lst for x in y]
 
 def is_release_build(ver):
+	# builds with REBUILD_DATE should not apply plain tags
+	# because they are typically older builds, not the latest
+	if os.getenv('REBUILD_DATE', '') != '':
+		return False
+
 	# release builds are a version number string only
 	# non-release builds contain a build type suffix such as -BETA/-RC/-SNAPSHOT
 	return re.sub(r"^\d+\.\d+\.\d+\.\d+(.*)$", r"\1", ver) == ""
@@ -32,15 +36,22 @@ def get_minor_version(ver):
 
 def get_jar_url(ver, variant):
 	if variant == '-light':
-		return f"https://release.lucee.org/rest/update/provider/light/{ver}"
+		return f"https://cdn.lucee.org/lucee-light-{ver}.jar"
 	else:
-		return f"https://release.lucee.org/rest/update/provider/loader/{ver}"
+		return f"https://cdn.lucee.org/lucee-{ver}.jar"
 
 def run(cmd):
 	return subprocess.run(cmd, check=True, universal_newlines=True)
 
 def tomcat(config):
 	return f"tomcat{config.TOMCAT_VERSION}-{config.TOMCAT_JAVA_VERSION}{config.TOMCAT_BASE_IMAGE}"
+
+def rebuild_tag():
+	if os.getenv('REBUILD_DATE', '') == '':
+		return f""
+	
+	return f"-{os.getenv('REBUILD_DATE')}"
+
 
 def discover_images():
 	LUCEE_MINORS = os.getenv('LUCEE_MINOR').split(',')
@@ -64,12 +75,13 @@ def discover_images():
 
 
 def find_tags_for_image(config, default_tomcat, tags):
-	yield f"{os.getenv('LUCEE_VERSION')}{config.LUCEE_VARIANT}{config.LUCEE_SERVER}-{tomcat(config)}"
+	yield f"{os.getenv('LUCEE_VERSION')}{config.LUCEE_VARIANT}{config.LUCEE_SERVER}-{tomcat(config)}{rebuild_tag()}"
 
 	is_default_tomcat = \
 		config.TOMCAT_JAVA_VERSION == default_tomcat['TOMCAT_JAVA_VERSION'] and \
 		config.TOMCAT_VERSION == default_tomcat['TOMCAT_VERSION'] and \
-		config.TOMCAT_BASE_IMAGE == default_tomcat['TOMCAT_BASE_IMAGE']
+		config.TOMCAT_BASE_IMAGE == default_tomcat['TOMCAT_BASE_IMAGE'] and \
+		os.getenv('REBUILD_DATE', '') == ''
 
 	if is_default_tomcat:
 		yield f"{os.getenv('LUCEE_VERSION')}{config.LUCEE_VARIANT}{config.LUCEE_SERVER}"
@@ -87,9 +99,9 @@ def find_tags_for_image(config, default_tomcat, tags):
 
 def config_to_build_args(config, namespace, image_name):
 	if config.LUCEE_SERVER == '':
-		build_args = {**attr.asdict(config), 'LUCEE_MINOR': config.LUCEE_MINOR, 'LUCEE_JAR_URL': get_jar_url(os.getenv('LUCEE_VERSION'), config.LUCEE_VARIANT)}
+		build_args = {**attr.asdict(config), 'LUCEE_VERSION': os.getenv('LUCEE_VERSION'), 'LUCEE_MINOR': config.LUCEE_MINOR, 'LUCEE_JAR_URL': get_jar_url(os.getenv('LUCEE_VERSION'), config.LUCEE_VARIANT)}
 	elif config.LUCEE_SERVER == '-nginx':
-		build_args = {'LUCEE_IMAGE': f"{namespace}/{image_name}:{os.getenv('LUCEE_VERSION')}{config.LUCEE_VARIANT}-{tomcat(config)}"}
+		build_args = {'LUCEE_IMAGE': f"{namespace}/{image_name}:{os.getenv('LUCEE_VERSION')}{config.LUCEE_VARIANT}-{tomcat(config)}{rebuild_tag()}"}
 	else:
 		build_args = {}
 
@@ -116,22 +128,41 @@ def main():
 						help='do not push the tags')
 	parser.add_argument('--list-tags', action='store_true', default=False,
 						help='only list the tags that would be generated')
+	parser.add_argument('--buildx-platform', dest='platform', action='store', default='linux/amd64,linux/arm64',
+						help='the target platform(s) to build, e.g. linux/amd64,linux/arm64')
+	parser.add_argument('--buildx-load', dest='load', action='store_true', default=False,
+						help='load the image into Docker from the builder')
 	args = parser.parse_args()
 
 	if args.list_tags:
 		args.push = False
 		args.build = False
 
+	if os.getenv('LUCEE_TARGETPLATFORM', None):
+		args.platform = os.getenv('LUCEE_TARGETPLATFORM', 'linux/amd64,linux/arm64')
+
+	if args.load:
+		args.push = False
+		if ',' in args.platform:
+			sys.exit("A single target platform must be specified when using load")
+
+
 	if args.version == None:
 		print("version argument missing or $LUCEE_VERSION not set")
 		sys.exit(1)
 
+	if os.getenv('SKIP_SNAPSHOTS', None):
+		if "SNAPSHOT" in args.version:
+			print("skipping SNAPSHOT build this run because SKIP_SNAPSHOTS env was set")
+			sys.exit(0)
+
+
 	with open('./matrix.yaml') as matrix_file:
 		matrix = yaml.safe_load(matrix_file)
 
-	is_master_build = os.getenv('TRAVIS_PULL_REQUEST', None) == 'false'
+	is_master_build = os.getenv('DRY_RUN', 'false') != 'true'
 	if os.getenv('CI', None):
-		print('will we deploy:', 'yes' if is_master_build else 'no')
+		print('will we deploy:', 'yes' if is_master_build and args.push else 'no')
 
 	namespace = matrix['config']['docker_hub_namespace']
 	image_name = matrix['config']['docker_hub_image']
@@ -139,6 +170,10 @@ def main():
 	for config in discover_images():
 		if config.LUCEE_MINOR == get_minor_version(os.getenv('LUCEE_VERSION')):
 			docker_args = ["--pull"]
+			if args.load:
+				# don't try to pull images from the registry when using buildx load
+				docker_args = []
+
 			if args.cache == False:
 				docker_args.append("--no-cache")
 
@@ -154,11 +189,24 @@ def main():
 			plain_tags = [f"{namespace}/{image_name}:{tag}" for tag in tags]
 			tag_args = flatten([["-t", tag] for tag in plain_tags])
 
+			buildx_args = []
+			if args.load:
+				buildx_args = [f"--load"]
+
+			if is_master_build and args.push:
+				buildx_args = [f"--push"]
+				print('pushing', plain_tags)
+			else: 
+				print('not a master build; skipping deployment of', plain_tags)
+
 			command = [
-				"docker", "build", *docker_args,
+				"docker", "buildx", "build", *docker_args,
 				*build_args,
+				"--platform", args.platform,
+				*buildx_args,
 				"-f", dockerfile,
 				*tag_args,
+				*buildx_args,
 				".",
 			]
 
@@ -166,13 +214,9 @@ def main():
 
 			if args.build:
 				run(command)
+		else:
+			print('mismatch of LUCEE_MINOR and LUCEE_VERSION: [', config.LUCEE_MINOR, '/', os.getenv('LUCEE_VERSION'), ']')
 
-			for tag in plain_tags:
-				if is_master_build and args.push:
-					print('pushing', tag)
-					run(["docker", "push", tag])
-				else:
-					print('not on master; skipping deployment of', tag)
 
 if __name__ == '__main__':
 	main()

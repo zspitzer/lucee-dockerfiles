@@ -3,8 +3,13 @@ travis:
     - docker
   language: python
   python: 3.6
-  dist: bionic
+  dist: focal
   os: linux
+  before_install:
+    - export DOCKER_CLI_EXPERIMENTAL=enabled
+    - mkdir -vp ~/.docker/cli-plugins/
+    - curl --silent -L "https://github.com/docker/buildx/releases/download/v0.5.1/buildx-v0.5.1.linux-amd64" > ~/.docker/cli-plugins/docker-buildx
+    - chmod a+x ~/.docker/cli-plugins/docker-buildx
   before_script:
     - 'echo TRAVIS_BRANCH: $TRAVIS_BRANCH'
     - 'echo TRAVIS_PULL_REQUEST: $TRAVIS_PULL_REQUEST'
@@ -12,6 +17,10 @@ travis:
     - pip3 install -r requirements.txt
     # exit the build if the travis config is different from the matrix config
     - python3 ./generate-matrix.py >/dev/null && git diff --exit-code
+    - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+    - docker buildx version
+    - docker buildx create --name multiarch --driver docker-container --use
+    - docker buildx inspect --bootstrap
   script:
     - echo $LUCEE_VERSION
     - python3 -u build-images.py
@@ -25,25 +34,49 @@ config:
 tags:
 
   # plain tags for minor verions
-  '5.2': &5_2
-    TOMCAT_VERSION: '8.5'
-    TOMCAT_JAVA_VERSION: 'jdk8-openjdk'
-    TOMCAT_BASE_IMAGE: ''
-    LUCEE_MINOR: '5.2'
-    LUCEE_SERVER: ''
-    LUCEE_VARIANT: ''
-
   '5.3': &5_3
     TOMCAT_VERSION: '9.0'
-    TOMCAT_JAVA_VERSION: 'jdk11-openjdk'
+    TOMCAT_JAVA_VERSION: 'jre11-temurin-jammy'
     TOMCAT_BASE_IMAGE: ''
     LUCEE_MINOR: '5.3'
     LUCEE_SERVER: ''
     LUCEE_VARIANT: ''
 
+  '5.4': &5_4
+    TOMCAT_VERSION: '9.0'
+    TOMCAT_JAVA_VERSION: 'jre11-temurin-jammy'
+    TOMCAT_BASE_IMAGE: ''
+    LUCEE_MINOR: '5.4'
+    LUCEE_SERVER: ''
+    LUCEE_VARIANT: ''
+
+  '6.0': &6_0
+    TOMCAT_VERSION: '9.0'
+    TOMCAT_JAVA_VERSION: 'jre11-temurin-jammy'
+    TOMCAT_BASE_IMAGE: ''
+    LUCEE_MINOR: '6.0'
+    LUCEE_SERVER: ''
+    LUCEE_VARIANT: ''
+
+  '6.1': &6_1
+    TOMCAT_VERSION: '9.0'
+    TOMCAT_JAVA_VERSION: 'jre21-temurin-jammy'
+    TOMCAT_BASE_IMAGE: ''
+    LUCEE_MINOR: '6.1'
+    LUCEE_SERVER: ''
+    LUCEE_VARIANT: ''
+
+  '6.2': &6_2
+    TOMCAT_VERSION: '10.1'
+    TOMCAT_JAVA_VERSION: 'jre21-temurin-jammy'
+    TOMCAT_BASE_IMAGE: ''
+    LUCEE_MINOR: '6.2'
+    LUCEE_SERVER: ''
+    LUCEE_VARIANT: ''
+
   # all other plain tags
   latest: &latest
-    <<: *5_3
+    <<: *6_0
   nginx:
     <<: *latest
     LUCEE_SERVER: '-nginx'
@@ -51,14 +84,6 @@ tags:
     <<: *latest
     LUCEE_VARIANT: '-light'
 
-
-  # 5.2 tags
-  5.2-light:
-    <<: *5_2
-    LUCEE_VARIANT: '-light'
-  5.2-nginx:
-    <<: *5_2
-    LUCEE_SERVER: '-nginx'
 
   # 5.3 tags
   5.3-light:
@@ -68,22 +93,59 @@ tags:
     <<: *5_3
     LUCEE_SERVER: '-nginx'
 
+  # 5.4 tags
+  5.4-light:
+    <<: *5_4
+    LUCEE_VARIANT: '-light'
+  5.4-nginx:
+    <<: *5_4
+    LUCEE_SERVER: '-nginx'
+
+  # 6.0 tags
+  6.0-light:
+    <<: *6_0
+    LUCEE_VARIANT: '-light'
+  6.0-nginx:
+    <<: *6_0
+    LUCEE_SERVER: '-nginx'
+
+  # 6.1 tags
+  6.1-light:
+    <<: *6_1
+    LUCEE_VARIANT: '-light'
+  6.1-nginx:
+    <<: *6_1
+    LUCEE_SERVER: '-nginx'
+
+  # 6.2 tags
+  6.2-light:
+    <<: *6_2
+    LUCEE_VARIANT: '-light'
+  6.2-nginx:
+    <<: *6_2
+    LUCEE_SERVER: '-nginx'
+
 matrix:
 
   TOMCAT_VERSION:
-    - '8.5'
     - '9.0'
+  #  - '10.1'
 
   TOMCAT_JAVA_VERSION:
-    - 'jdk8-openjdk'
-    - 'jdk11-openjdk'
+    - 'jre8-temurin-jammy'
+    - 'jre11-temurin-jammy'
+    - 'jdk8-temurin-jammy'
+    - 'jdk11-temurin-jammy'
+    - 'jdk8-temurin-focal'
+    - 'jdk11-temurin-focal'
 
   TOMCAT_BASE_IMAGE:
     - ''
 
   LUCEE_MINOR:
-    - '5.2'
     - '5.3'
+    - '5.4'
+    - '6.0'
 
   LUCEE_SERVER:
     - ''
@@ -92,9 +154,30 @@ matrix:
   LUCEE_VARIANT:
     - ''
     - '-light'
+    # - '-zero'
 
 exclusions:
 
-  # Tomcat 8.5 is not needed for Lucee 5.3
-  - TOMCAT_VERSION: '8.5'
+  # Tomcat 10.1 is not needed for Lucee 5.3
+  # - TOMCAT_VERSION: '10.1'
+  #   LUCEE_MINOR: '5.3'
+
+  # Zero variant is not needed for Lucee 5.3/5.4
+  # - LUCEE_MINOR: '5.3'
+  #   LUCEE_VARIANT: '-zero'
+  # - LUCEE_MINOR: '5.4'
+  #   LUCEE_VARIANT: '-zero'
+
+  # this exclusion is NOT needed, because the main do not list this version in the first place, but the phyton code does reference it, so we keep it for the moment
+  - TOMCAT_JAVA_VERSION: 'jre8-temurin-jammy'
+    LUCEE_MINOR: '6.0'
+  - TOMCAT_JAVA_VERSION: 'jre8-temurin-jammy'
+    LUCEE_MINOR: '6.1'
+  - TOMCAT_JAVA_VERSION: 'jre8-temurin-jammy'
+    LUCEE_MINOR: '6.2'
+  - TOMCAT_JAVA_VERSION: 'jre11-temurin-jammy'
+    LUCEE_MINOR: '6.2'
+  - TOMCAT_JAVA_VERSION: 'jre21-temurin-jammy'
     LUCEE_MINOR: '5.3'
+  - TOMCAT_JAVA_VERSION: 'jre21-temurin-jammy'
+    LUCEE_MINOR: '5.4'
