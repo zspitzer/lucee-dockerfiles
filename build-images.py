@@ -37,6 +37,8 @@ def get_minor_version(ver):
 def get_jar_url(ver, variant):
 	if variant == '-light':
 		return f"https://cdn.lucee.org/lucee-light-{ver}.jar"
+	elif variant == '-zero':
+		return f"https://cdn.lucee.org/lucee-zero-{ver}.jar"
 	else:
 		return f"https://cdn.lucee.org/lucee-{ver}.jar"
 
@@ -196,8 +198,12 @@ def main():
 			if is_master_build and args.push:
 				buildx_args = [f"--push"]
 				print('pushing', plain_tags)
+				with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
+					print('pushing', plain_tags, file=fh)
 			else: 
 				print('not a master build; skipping deployment of', plain_tags)
+				with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
+					print('not a master build; skipping deployment of', plain_tags, file=fh)
 
 			command = [
 				"docker", "buildx", "build", *docker_args,
