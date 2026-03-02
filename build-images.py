@@ -99,11 +99,11 @@ def find_tags_for_image(config, default_tomcat, tags):
 		]
 
 
-def config_to_build_args(config, namespace, image_name):
+def config_to_build_args(config, namespace, image_name, arch_suffix=''):
 	if config.LUCEE_SERVER == '':
 		build_args = {**attr.asdict(config), 'LUCEE_VERSION': os.getenv('LUCEE_VERSION'), 'LUCEE_MINOR': config.LUCEE_MINOR, 'LUCEE_JAR_URL': get_jar_url(os.getenv('LUCEE_VERSION'), config.LUCEE_VARIANT)}
 	elif config.LUCEE_SERVER == '-nginx':
-		build_args = {'LUCEE_IMAGE': f"{namespace}/{image_name}:{os.getenv('LUCEE_VERSION')}{config.LUCEE_VARIANT}-{tomcat(config)}{rebuild_tag()}"}
+		build_args = {'LUCEE_IMAGE': f"{namespace}/{image_name}:{os.getenv('LUCEE_VERSION')}{config.LUCEE_VARIANT}-{tomcat(config)}{rebuild_tag()}{arch_suffix}"}
 	else:
 		build_args = {}
 
@@ -183,11 +183,15 @@ def main():
 			if args.load:
 				# don't try to pull images from the registry when using buildx load
 				docker_args = []
+			if not is_master_build and config.LUCEE_SERVER == '-nginx':
+				# in dry runs, skip nginx builds - base image isn't in registry for FROM to resolve
+				print(f'dry run: skipping nginx build (base image not available)')
+				continue
 
 			if args.cache == False:
 				docker_args.append("--no-cache")
 
-			build_args = list(config_to_build_args(config, namespace=namespace, image_name=image_name))
+			build_args = list(config_to_build_args(config, namespace=namespace, image_name=image_name, arch_suffix=args.arch_suffix))
 			dockerfile = pick_dockerfile(config)
 
 			tags = list(find_tags_for_image(config, default_tomcat=matrix['tags'][config.LUCEE_MINOR], tags=matrix['tags']))
@@ -197,7 +201,8 @@ def main():
 				continue
 
 			if args.create_manifests:
-				# Create and push multi-arch manifests
+				# Create and push multi-arch manifests using buildx imagetools
+				# imagetools can combine manifest lists (images with attestations)
 				for tag in tags:
 					manifest_tag = f"{namespace}/{image_name}:{tag}"
 					amd64_tag = f"{namespace}/{image_name}:{tag}-amd64"
@@ -205,17 +210,14 @@ def main():
 
 					if is_master_build:
 						print(f'creating manifest {manifest_tag}')
-						manifest_cmd = [
-							"docker", "manifest", "create", manifest_tag,
-							"--amend", amd64_tag,
-							"--amend", arm64_tag,
+						imagetools_cmd = [
+							"docker", "buildx", "imagetools", "create",
+							"-t", manifest_tag,
+							amd64_tag,
+							arm64_tag,
 						]
-						print(' '.join(manifest_cmd))
-						run(manifest_cmd)
-
-						push_cmd = ["docker", "manifest", "push", manifest_tag]
-						print(' '.join(push_cmd))
-						run(push_cmd)
+						print(' '.join(imagetools_cmd))
+						run(imagetools_cmd)
 
 						if os.getenv('GITHUB_STEP_SUMMARY', None):
 							with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
@@ -233,7 +235,7 @@ def main():
 				buildx_args = [f"--load"]
 
 			if is_master_build and args.push:
-				buildx_args = [f"--push"]
+				buildx_args = ["--push"]
 				print('pushing', plain_tags)
 				if os.getenv('GITHUB_STEP_SUMMARY', None):
 					with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
